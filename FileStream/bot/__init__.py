@@ -2,11 +2,11 @@ from ..config import Telegram
 from pyrogram import Client
 
 if Telegram.SECONDARY:
-    plugins=None
-    no_updates=True
-else:    
-    plugins={"root": "FileStream/bot/plugins"}
-    no_updates=None
+    plugins = None
+    no_updates = True
+else:
+    plugins = {"root": "FileStream/bot/plugins"}
+    no_updates = None
 
 FileStream = Client(
     name="FileStream",
@@ -22,4 +22,3 @@ FileStream = Client(
 
 multi_clients = {}
 work_loads = {}
-
