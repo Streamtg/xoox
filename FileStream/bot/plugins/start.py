@@ -1,6 +1,7 @@
 import logging
 import math
-from FileStream import __version__
+import asyncio
+from FileStream import version
 from FileStream.bot import FileStream
 from FileStream.server.exceptions import FIleNotFound
 from FileStream.utils.bot_utils import gen_linkx, verify_user
@@ -10,14 +11,15 @@ from FileStream.utils.translation import LANG, BUTTON
 from pyrogram import filters, Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from pyrogram.enums.parse_mode import ParseMode
-import asyncio
 
 db = Database(Telegram.DATABASE_URL, Telegram.SESSION_NAME)
+
 
 @FileStream.on_message(filters.command('start') & filters.private)
 async def start(bot: Client, message: Message):
     if not await verify_user(bot, message):
         return
+
     usr_cmd = message.text.split("_")[-1]
 
     if usr_cmd == "/start":
@@ -36,13 +38,17 @@ async def start(bot: Client, message: Message):
                 reply_markup=BUTTON.START_BUTTONS
             )
     else:
+        # Comando con parámetro, por ejemplo start_stream_xxx o start_file_xxx
         if "stream_" in message.text:
             try:
                 file_check = await db.get_file(usr_cmd)
                 file_id = str(file_check['_id'])
                 if file_id == usr_cmd:
-                    reply_markup, stream_text = await gen_linkx(m=message, _id=file_id,
-                                                                name=[FileStream.username, FileStream.fname])
+                    reply_markup, stream_text = await gen_linkx(
+                        m=message,
+                        _id=file_id,
+                        name=[FileStream.username, FileStream.fname]
+                    )
                     await message.reply_text(
                         text=stream_text,
                         parse_mode=ParseMode.HTML,
@@ -50,12 +56,11 @@ async def start(bot: Client, message: Message):
                         reply_markup=reply_markup,
                         quote=True
                     )
-
-            except FIleNotFound as e:
+            except FIleNotFound:
                 await message.reply_text("File Not Found")
             except Exception as e:
-                await message.reply_text("Something Went Wrong")
                 logging.error(e)
+                await message.reply_text("Something Went Wrong")
 
         elif "file_" in message.text:
             try:
@@ -71,38 +76,40 @@ async def start(bot: Client, message: Message):
                         await message.delete()
                     except Exception:
                         pass
-
-            except FIleNotFound as e:
+            except FIleNotFound:
                 await message.reply_text("**File Not Found**")
             except Exception as e:
-                await message.reply_text("Something Went Wrong")
                 logging.error(e)
-
+                await message.reply_text("Something Went Wrong")
         else:
-            await message.reply_text(f"**Invalid Command**")
+            await message.reply_text("**Invalid Command**")
+
 
 @FileStream.on_message(filters.private & filters.command(["about"]))
-async def start(bot, message):
+async def about_handler(bot: Client, message: Message):
     if not await verify_user(bot, message):
         return
+
     if Telegram.START_PIC:
         await message.reply_photo(
             photo=Telegram.START_PIC,
-            caption=LANG.ABOUT_TEXT.format(FileStream.fname, __version__),
+            caption=LANG.ABOUT_TEXT.format(FileStream.fname, version),
             parse_mode=ParseMode.HTML,
             reply_markup=BUTTON.ABOUT_BUTTONS
         )
     else:
         await message.reply_text(
-            text=LANG.ABOUT_TEXT.format(FileStream.fname, __version__),
+            text=LANG.ABOUT_TEXT.format(FileStream.fname, version),
             disable_web_page_preview=True,
             reply_markup=BUTTON.ABOUT_BUTTONS
         )
 
+
 @FileStream.on_message((filters.command('help')) & filters.private)
-async def help_handler(bot, message):
+async def help_handler(bot: Client, message: Message):
     if not await verify_user(bot, message):
         return
+
     if Telegram.START_PIC:
         await message.reply_photo(
             photo=Telegram.START_PIC,
@@ -118,17 +125,18 @@ async def help_handler(bot, message):
             reply_markup=BUTTON.HELP_BUTTONS
         )
 
-# ---------------------------------------------------------------------------------------------------
 
 @FileStream.on_message(filters.command('files') & filters.private)
 async def my_files(bot: Client, message: Message):
     if not await verify_user(bot, message):
         return
+
     user_files, total_files = await db.find_files(message.from_user.id, [1, 10])
 
     file_list = []
     async for x in user_files:
         file_list.append([InlineKeyboardButton(x["file_name"], callback_data=f"myfile_{x['_id']}_{1}")])
+
     if total_files > 10:
         file_list.append(
             [
@@ -137,13 +145,16 @@ async def my_files(bot: Client, message: Message):
                 InlineKeyboardButton("►", callback_data="userfiles_2")
             ],
         )
+
     if not file_list:
         file_list.append(
             [InlineKeyboardButton("ᴇᴍᴘᴛʏ", callback_data="N/A")],
         )
+
     file_list.append([InlineKeyboardButton("ᴄʟᴏsᴇ", callback_data="close")])
-    await message.reply_photo(photo=Telegram.FILE_PIC,
-                              caption="Total files: {}".format(total_files),
-                              reply_markup=InlineKeyboardMarkup(file_list))
 
-
+    await message.reply_photo(
+        photo=Telegram.FILE_PIC,
+        caption=f"Total files: {total_files}",
+        reply_markup=InlineKeyboardMarkup(file_list)
+    )
