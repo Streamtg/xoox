@@ -8,4 +8,4 @@ dnspython
 requests
 jinja2
 aioredis
-aiohttp
+redis>=4.2.0
