@@ -2,18 +2,18 @@ import redis.asyncio as redis
 import time
 import json
 from FileStream.server.exceptions import FIleNotFound
+from your_config_module import Telegram  # importa la clase Telegram con las variables de entorno
 
 
 class Database:
-    def __init__(self, uri, password=None):
-        self.uri = uri
-        self.password = password
+    def __init__(self):
         self.redis = None
 
     async def connect(self):
+        # Usa la configuración de Redis de la clase Telegram
         self.redis = redis.from_url(
-            self.uri,
-            password=self.password,
+            Telegram.REDIS_URI,
+            password=Telegram.REDIS_PASSWORD,
             encoding="utf-8",
             decode_responses=True
         )
