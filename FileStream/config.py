@@ -14,15 +14,9 @@ class Telegram:
     MODE = os.getenv("MODE", "primary")
     SECONDARY = MODE.lower() == "secondary"
 
-    # Ejemplo conexión a Redis con redis-py
-    redis = None
-
-    @classmethod
-    async def connect_db(cls):
-        import redis.asyncio as redis
-        cls.redis = redis.from_url(cls.REDIS_URL, decode_responses=True)
-        # Puedes agregar un ping o prueba aquí:
-        await cls.redis.ping()
+    AUTH_USERS = list(set(
+        int(x) for x in str(os.getenv("AUTH_USERS", "")).split() if x.isdigit()
+    ))
 
 class Server:
     PORT = int(os.getenv("PORT", 8080))
