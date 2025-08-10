@@ -1,115 +1,131 @@
+import aioredis
 import time
-import pymongo
-import motor.motor_asyncio
-from bson.objectid import ObjectId
-from bson.errors import InvalidId
-from urllib.parse import urlparse
+import json
 from FileStream.server.exceptions import FIleNotFound
 
 
 class Database:
-    def __init__(self, uri, database_name=None):
-        # Si no se pasa database_name, lo obtenemos del URI o usamos uno por defecto
-        if not database_name:
-            parsed = urlparse(uri)
-            db_name = parsed.path[1:] if parsed.path and len(parsed.path) > 1 else "FileStreamDB"
-        else:
-            db_name = database_name
+    def __init__(self, uri, password=None):
+        self.uri = uri
+        self.password = password
+        self.redis = None
 
-        self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
-        self.db = self._client[db_name]
-        self.col = self.db.users
-        self.black = self.db.blacklist
-        self.file = self.db.file
-
-    # ---------------------[ NEW USER ]--------------------- #
-    def new_user(self, id):
-        return dict(
-            id=id,
-            join_date=time.time(),
-            Links=0
+    async def connect(self):
+        self.redis = await aioredis.from_url(
+            self.uri,
+            password=self.password,
+            encoding="utf-8",
+            decode_responses=True
         )
+
+# ---------------------[ USER ]---------------------#
+    def new_user(self, id):
+        return {
+            "id": id,
+            "join_date": time.time(),
+            "Links": 0
+        }
 
     async def add_user(self, id):
-        user = self.new_user(id)
-        await self.col.insert_one(user)
+        user_key = f"user:{id}"
+        if not await self.redis.exists(user_key):
+            await self.redis.hset(user_key, mapping=self.new_user(id))
+            await self.redis.sadd("users", id)
 
     async def get_user(self, id):
-        return await self.col.find_one({'id': int(id)})
+        user_key = f"user:{id}"
+        return await self.redis.hgetall(user_key)
 
     async def total_users_count(self):
-        return await self.col.count_documents({})
+        return await self.redis.scard("users")
 
     async def get_all_users(self):
-        return self.col.find({})
+        return await self.redis.smembers("users")
 
     async def delete_user(self, user_id):
-        await self.col.delete_many({'id': int(user_id)})
+        await self.redis.delete(f"user:{user_id}")
+        await self.redis.srem("users", user_id)
 
-    # ---------------------[ BAN, UNBAN USER ]--------------------- #
+# ---------------------[ BAN, UNBAN USER ]---------------------#
     def black_user(self, id):
-        return dict(
-            id=id,
-            ban_date=time.time()
-        )
+        return {
+            "id": id,
+            "ban_date": time.time()
+        }
 
     async def ban_user(self, id):
-        await self.black.insert_one(self.black_user(id))
+        await self.redis.hset(f"banned:{id}", mapping=self.black_user(id))
+        await self.redis.sadd("banned_users", id)
 
     async def unban_user(self, id):
-        await self.black.delete_one({'id': int(id)})
+        await self.redis.delete(f"banned:{id}")
+        await self.redis.srem("banned_users", id)
 
     async def is_user_banned(self, id):
-        return bool(await self.black.find_one({'id': int(id)}))
+        return await self.redis.exists(f"banned:{id}") > 0
 
     async def total_banned_users_count(self):
-        return await self.black.count_documents({})
+        return await self.redis.scard("banned_users")
 
-    # ---------------------[ ADD FILE TO DB ]--------------------- #
+# ---------------------[ FILES ]---------------------#
     async def add_file(self, file_info):
         file_info["time"] = time.time()
-        fetch_old = await self.get_file_by_fileuniqueid(file_info["user_id"], file_info["file_unique_id"])
-        if fetch_old:
-            return fetch_old["_id"]
+        existing = await self.get_file_by_fileuniqueid(file_info["user_id"], file_info["file_unique_id"])
+        if existing:
+            return existing["file_id"]
+
+        file_id = str(await self.redis.incr("file:id_counter"))
+        file_info["file_id"] = file_id
+
+        await self.redis.hset(f"file:{file_id}", mapping={k: json.dumps(v) for k, v in file_info.items()})
+        await self.redis.lpush(f"user_files:{file_info['user_id']}", file_id)
         await self.count_links(file_info["user_id"], "+")
-        return (await self.file.insert_one(file_info)).inserted_id
+        return file_id
 
-    async def find_files(self, user_id, range):
-        user_files = self.file.find({"user_id": user_id})
-        user_files.skip(range[0] - 1)
-        user_files.limit(range[1] - range[0] + 1)
-        user_files.sort('_id', pymongo.DESCENDING)
-        total_files = await self.file.count_documents({"user_id": user_id})
-        return user_files, total_files
+    async def find_files(self, user_id, range_tuple):
+        start = range_tuple[0] - 1
+        end = range_tuple[1] - 1
+        file_ids = await self.redis.lrange(f"user_files:{user_id}", start, end)
+        total_files = await self.redis.llen(f"user_files:{user_id}")
+        files = [await self.get_file(fid) for fid in file_ids]
+        return files, total_files
 
-    async def get_file(self, _id):
-        try:
-            file_info = await self.file.find_one({"_id": ObjectId(_id)})
-            if not file_info:
-                raise FIleNotFound
-            return file_info
-        except InvalidId:
+    async def get_file(self, file_id):
+        data = await self.redis.hgetall(f"file:{file_id}")
+        if not data:
             raise FIleNotFound
+        return {k: json.loads(v) for k, v in data.items()}
 
-    async def get_file_by_fileuniqueid(self, id, file_unique_id, many=False):
-        if many:
-            return self.file.find({"file_unique_id": file_unique_id})
-        file_info = await self.file.find_one({"user_id": id, "file_unique_id": file_unique_id})
-        return file_info if file_info else False
+    async def get_file_by_fileuniqueid(self, user_id, file_unique_id, many=False):
+        file_ids = await self.redis.lrange(f"user_files:{user_id}", 0, -1)
+        matched_files = []
+        for fid in file_ids:
+            file_data = await self.get_file(fid)
+            if file_data.get("file_unique_id") == file_unique_id:
+                if many:
+                    matched_files.append(file_data)
+                else:
+                    return file_data
+        return matched_files if many else False
 
-    async def total_files(self, id=None):
-        if id:
-            return await self.file.count_documents({"user_id": id})
-        return await self.file.count_documents({})
+    async def total_files(self, user_id=None):
+        if user_id:
+            return await self.redis.llen(f"user_files:{user_id}")
+        keys = await self.redis.keys("file:*")
+        return len(keys)
 
-    async def delete_one_file(self, _id):
-        await self.file.delete_one({'_id': ObjectId(_id)})
+    async def delete_one_file(self, file_id):
+        file_data = await self.get_file(file_id)
+        await self.redis.lrem(f"user_files:{file_data['user_id']}", 0, file_id)
+        await self.redis.delete(f"file:{file_id}")
 
-    async def update_file_ids(self, _id, file_ids: dict):
-        await self.file.update_one({"_id": ObjectId(_id)}, {"$set": {"file_ids": file_ids}})
+    async def update_file_ids(self, file_id, file_ids: dict):
+        await self.redis.hset(f"file:{file_id}", "file_ids", json.dumps(file_ids))
 
-    async def count_links(self, id, operation: str):
+# ---------------------[ LINKS COUNT ]---------------------#
+    async def count_links(self, user_id, operation: str):
+        key = f"user:{user_id}"
         if operation == "-":
-            await self.col.update_one({"id": id}, {"$inc": {"Links": -1}})
+            await self.redis.hincrby(key, "Links", -1)
         elif operation == "+":
-            await self.col.update_one({"id": id}, {"$inc": {"Links": 1}})
+            await self.redis.hincrby(key, "Links", 1)
