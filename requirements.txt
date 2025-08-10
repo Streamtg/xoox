@@ -8,6 +8,6 @@ requests
 jinja2
 python-dotenv
 aiogram
-redis>=4.2.0
 uvloop
 ujson
+redis[async]
