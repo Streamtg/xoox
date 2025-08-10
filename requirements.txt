@@ -10,4 +10,4 @@ python-dotenv
 aiogram
 uvloop
 ujson
-redis[async]
+aiocouch
