@@ -12,8 +12,8 @@ class Database:
 
     async def connect(self):
         self.redis = redis.from_url(self.uri, decode_responses=True)
+        await self.redis.ping()
 
-    # ---------------------[ NEW USER ]--------------------- #
     def new_user(self, id):
         return dict(
             id=id,
@@ -41,7 +41,6 @@ class Database:
     async def delete_user(self, user_id):
         await self.redis.delete(f"user:{user_id}")
 
-    # ---------------------[ BAN, UNBAN USER ]--------------------- #
     async def ban_user(self, id):
         await self.redis.set(f"ban:{id}", time.time())
 
@@ -55,7 +54,6 @@ class Database:
         keys = await self.redis.keys("ban:*")
         return len(keys)
 
-    # ---------------------[ FILES ]--------------------- #
     async def add_file(self, file_info):
         file_id = str(ObjectId())
         file_info["time"] = time.time()
@@ -88,7 +86,6 @@ class Database:
                 count += 1
         return count
 
-    # ---------------------[ PLAN ]--------------------- #
     async def link_available(self, id):
         user = await self.get_user(id)
         if not user:
