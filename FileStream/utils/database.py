@@ -1,4 +1,4 @@
-import aioredis
+import redis.asyncio as redis
 import time
 import json
 from FileStream.server.exceptions import FIleNotFound
@@ -11,7 +11,7 @@ class Database:
         self.redis = None
 
     async def connect(self):
-        self.redis = await aioredis.from_url(
+        self.redis = redis.from_url(
             self.uri,
             password=self.password,
             encoding="utf-8",
