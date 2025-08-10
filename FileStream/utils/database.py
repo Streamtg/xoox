@@ -1,131 +1,107 @@
-import redis.asyncio as redis
 import time
 import json
+import redis.asyncio as redis
+from bson.objectid import ObjectId
 from FileStream.server.exceptions import FIleNotFound
-from your_config_module import Telegram  # importa la clase Telegram con las variables de entorno
-
 
 class Database:
-    def __init__(self):
+    def __init__(self, uri, db_name):
+        self.uri = uri
+        self.db_name = db_name
         self.redis = None
 
     async def connect(self):
-        # Usa la configuración de Redis de la clase Telegram
-        self.redis = redis.from_url(
-            Telegram.REDIS_URI,
-            password=Telegram.REDIS_PASSWORD,
-            encoding="utf-8",
-            decode_responses=True
+        self.redis = redis.from_url(self.uri, decode_responses=True)
+
+    # ---------------------[ NEW USER ]--------------------- #
+    def new_user(self, id):
+        return dict(
+            id=id,
+            join_date=time.time(),
+            Links=0
         )
 
-# ---------------------[ USER ]---------------------#
-    def new_user(self, id):
-        return {
-            "id": id,
-            "join_date": time.time(),
-            "Links": 0
-        }
-
     async def add_user(self, id):
-        user_key = f"user:{id}"
-        if not await self.redis.exists(user_key):
-            await self.redis.hset(user_key, mapping=self.new_user(id))
-            await self.redis.sadd("users", id)
+        user = self.new_user(id)
+        await self.redis.hset(f"user:{id}", mapping=user)
 
     async def get_user(self, id):
-        user_key = f"user:{id}"
-        return await self.redis.hgetall(user_key)
+        data = await self.redis.hgetall(f"user:{id}")
+        return {k: int(v) if v.isdigit() else v for k, v in data.items()} if data else None
 
     async def total_users_count(self):
-        return await self.redis.scard("users")
+        keys = await self.redis.keys("user:*")
+        return len(keys)
 
     async def get_all_users(self):
-        return await self.redis.smembers("users")
+        keys = await self.redis.keys("user:*")
+        for key in keys:
+            yield await self.redis.hgetall(key)
 
     async def delete_user(self, user_id):
         await self.redis.delete(f"user:{user_id}")
-        await self.redis.srem("users", user_id)
 
-# ---------------------[ BAN, UNBAN USER ]---------------------#
-    def black_user(self, id):
-        return {
-            "id": id,
-            "ban_date": time.time()
-        }
-
+    # ---------------------[ BAN, UNBAN USER ]--------------------- #
     async def ban_user(self, id):
-        await self.redis.hset(f"banned:{id}", mapping=self.black_user(id))
-        await self.redis.sadd("banned_users", id)
+        await self.redis.set(f"ban:{id}", time.time())
 
     async def unban_user(self, id):
-        await self.redis.delete(f"banned:{id}")
-        await self.redis.srem("banned_users", id)
+        await self.redis.delete(f"ban:{id}")
 
     async def is_user_banned(self, id):
-        return await self.redis.exists(f"banned:{id}") > 0
+        return await self.redis.exists(f"ban:{id}") > 0
 
     async def total_banned_users_count(self):
-        return await self.redis.scard("banned_users")
+        keys = await self.redis.keys("ban:*")
+        return len(keys)
 
-# ---------------------[ FILES ]---------------------#
+    # ---------------------[ FILES ]--------------------- #
     async def add_file(self, file_info):
+        file_id = str(ObjectId())
         file_info["time"] = time.time()
-        existing = await self.get_file_by_fileuniqueid(file_info["user_id"], file_info["file_unique_id"])
-        if existing:
-            return existing["file_id"]
-
-        file_id = str(await self.redis.incr("file:id_counter"))
-        file_info["file_id"] = file_id
-
-        await self.redis.hset(f"file:{file_id}", mapping={k: json.dumps(v) for k, v in file_info.items()})
-        await self.redis.lpush(f"user_files:{file_info['user_id']}", file_id)
+        await self.redis.set(f"file:{file_id}", json.dumps(file_info))
         await self.count_links(file_info["user_id"], "+")
         return file_id
 
-    async def find_files(self, user_id, range_tuple):
-        start = range_tuple[0] - 1
-        end = range_tuple[1] - 1
-        file_ids = await self.redis.lrange(f"user_files:{user_id}", start, end)
-        total_files = await self.redis.llen(f"user_files:{user_id}")
-        files = [await self.get_file(fid) for fid in file_ids]
-        return files, total_files
-
-    async def get_file(self, file_id):
-        data = await self.redis.hgetall(f"file:{file_id}")
+    async def get_file(self, _id):
+        data = await self.redis.get(f"file:{_id}")
         if not data:
             raise FIleNotFound
-        return {k: json.loads(v) for k, v in data.items()}
+        return json.loads(data)
 
-    async def get_file_by_fileuniqueid(self, user_id, file_unique_id, many=False):
-        file_ids = await self.redis.lrange(f"user_files:{user_id}", 0, -1)
-        matched_files = []
-        for fid in file_ids:
-            file_data = await self.get_file(fid)
-            if file_data.get("file_unique_id") == file_unique_id:
-                if many:
-                    matched_files.append(file_data)
-                else:
-                    return file_data
-        return matched_files if many else False
+    async def delete_one_file(self, _id):
+        await self.redis.delete(f"file:{_id}")
 
-    async def total_files(self, user_id=None):
-        if user_id:
-            return await self.redis.llen(f"user_files:{user_id}")
+    async def update_file_ids(self, _id, file_ids: dict):
+        data = await self.get_file(_id)
+        data["file_ids"] = file_ids
+        await self.redis.set(f"file:{_id}", json.dumps(data))
+
+    async def total_files(self, id=None):
         keys = await self.redis.keys("file:*")
-        return len(keys)
+        if not id:
+            return len(keys)
+        count = 0
+        for key in keys:
+            data = json.loads(await self.redis.get(key))
+            if data.get("user_id") == id:
+                count += 1
+        return count
 
-    async def delete_one_file(self, file_id):
-        file_data = await self.get_file(file_id)
-        await self.redis.lrem(f"user_files:{file_data['user_id']}", 0, file_id)
-        await self.redis.delete(f"file:{file_id}")
+    # ---------------------[ PLAN ]--------------------- #
+    async def link_available(self, id):
+        user = await self.get_user(id)
+        if not user:
+            return False
+        if user.get("Plan") == "Plus":
+            return "Plus"
+        elif user.get("Plan") == "Free":
+            files = await self.total_files(id)
+            return files < 11
+        return False
 
-    async def update_file_ids(self, file_id, file_ids: dict):
-        await self.redis.hset(f"file:{file_id}", "file_ids", json.dumps(file_ids))
-
-# ---------------------[ LINKS COUNT ]---------------------#
-    async def count_links(self, user_id, operation: str):
-        key = f"user:{user_id}"
+    async def count_links(self, id, operation: str):
         if operation == "-":
-            await self.redis.hincrby(key, "Links", -1)
+            await self.redis.hincrby(f"user:{id}", "Links", -1)
         elif operation == "+":
-            await self.redis.hincrby(key, "Links", 1)
+            await self.redis.hincrby(f"user:{id}", "Links", 1)
